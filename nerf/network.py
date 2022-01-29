@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from encoding import get_encoder
+
 import raymarching
 
 def sample_pdf(bins, weights, n_samples, det=False):
@@ -62,7 +63,6 @@ def near_far_from_bound(rays_o, rays_d, bound, type='cube'):
         tmax = (bound - rays_o) / rays_d
         near = torch.where(tmin < tmax, tmin, tmax).max(dim=-1, keepdim=True)[0]
         far = torch.where(tmin > tmax, tmin, tmax).min(dim=-1, keepdim=True)[0]
-
         near = torch.clamp(near, min=0.05)
 
     return near, far
