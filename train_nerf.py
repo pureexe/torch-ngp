@@ -3,7 +3,7 @@ import torch
 from nerf.provider import NeRFDataset
 from nerf.utils import *
 
-import argparse
+import argparse, os
 
 #torch.autograd.set_detect_anomaly(True)
 
@@ -15,11 +15,14 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num_rays', type=int, default=4096)
     parser.add_argument('--num_steps', type=int, default=128)
+    parser.add_argument('--num_epoch', type=int, default=200)
+    parser.add_argument('--eval_interval', type=int, default=10)
     parser.add_argument('--upsample_steps', type=int, default=128)
     parser.add_argument('--max_ray_batch', type=int, default=4096)
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
     parser.add_argument('--ff', action='store_true', help="use fully-fused MLP")
     parser.add_argument('--tcnn', action='store_true', help="use TCNN backend")
+    parser.add_argument('--plane3', action='store_true', help="use 3 plane projection")
 
     parser.add_argument('--mode', type=str, default='colmap', help="dataset mode, supports (colmap, blender)")
     # the default setting for fox.
@@ -32,18 +35,26 @@ if __name__ == '__main__':
 
     print(opt)
 
-    if opt.ff:
+    if opt.plane3:
+        from nerf.network_plane3 import NeRFNetwork
+        print('NeRF: plane3')
+    elif opt.ff:
         assert opt.fp16, "fully-fused mode must be used with fp16 mode"
         from nerf.network_ff import NeRFNetwork
+        print('NeRF: Fully-Fused')
     elif opt.tcnn:
         from nerf.network_tcnn import NeRFNetwork
+        print('NeRF: TCNN')
     else:
         from nerf.network import NeRFNetwork
+        print('NeRF: torch implemented')
+        
 
     seed_everything(opt.seed)
 
     train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale)
-    valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=2, scale=opt.scale)
+    valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode,  scale=opt.scale)
+    #valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=2, scale=opt.scale) #PURE: previously down scale on evaluation by 2
 
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
     valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=1)
@@ -60,17 +71,28 @@ if __name__ == '__main__':
 
     criterion = torch.nn.SmoothL1Loss()
 
+    if hasattr(model, 'encoders'):
+        encoding_params = []
+        for k in model.encoders:
+            encoding_params += list(k.parameters())
+    else:
+        encoding_params = list(model.encoder.parameters())
     optimizer = lambda model: torch.optim.Adam([
-        {'name': 'encoding', 'params': list(model.encoder.parameters())},
+        {'name': 'encoding', 'params': encoding_params},
         {'name': 'net', 'params': list(model.sigma_net.parameters()) + list(model.color_net.parameters()), 'weight_decay': 1e-6},
     ], lr=1e-2, betas=(0.9, 0.99), eps=1e-15)
 
-    scheduler = lambda optimizer: optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 100, 150], gamma=0.33)
+    #scheduler = lambda optimizer: optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 100, 150], gamma=0.33)
+    mile_stone = opt.num_epoch // 4
+    scheduler = lambda optimizer: optim.lr_scheduler.MultiStepLR(optimizer, milestones=[mile_stone, mile_stone * 2, mile_stone * 3], gamma=0.33)
+    #scheduler = lambda optimizer: optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9, last_epoch=opt.num_epoch)
 
-    trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint='latest', eval_interval=10)
-    
-    trainer.train(train_loader, valid_loader, 200)
 
+    print(model)
+    trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint='latest', eval_interval=opt.eval_interval)
+    training_start = time.time()
+    trainer.train(train_loader, valid_loader, opt.num_epoch)
+    print(">>>>> finished training in {:6f} seconds <<<<<<".format(time.time() - training_start))
     # test dataset
     #trainer.save_mesh()
     test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale)

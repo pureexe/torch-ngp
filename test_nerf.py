@@ -3,7 +3,7 @@ import torch
 from nerf.provider import NeRFDataset
 from nerf.utils import *
 
-import argparse
+import argparse,time
 
 if __name__ == '__main__':
 
@@ -16,6 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('--upsample_steps', type=int, default=128)
     parser.add_argument('--max_ray_batch', type=int, default=4096) # lower if OOM
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
+    parser.add_argument('--plane3', action='store_true', help="use 3 plane projection")
     parser.add_argument('--ff', action='store_true', help="use fully-fused MLP")
     parser.add_argument('--tcnn', action='store_true', help="use TCNN backend")
     
@@ -30,13 +31,19 @@ if __name__ == '__main__':
 
     print(opt)
 
-    if opt.ff:
+    if opt.plane3:
+        from nerf.network_plane3 import NeRFNetwork
+        print('NeRF: plane3')
+    elif opt.ff:
         assert opt.fp16, "fully-fused mode must be used with fp16 mode"
         from nerf.network_ff import NeRFNetwork
+        print('NeRF: Fully-Fused')
     elif opt.tcnn:
         from nerf.network_tcnn import NeRFNetwork
+        print('NeRF: TCNN')
     else:
         from nerf.network import NeRFNetwork
+        print('NeRF: torch implemented')
         
     seed_everything(opt.seed)
 
@@ -47,9 +54,10 @@ if __name__ == '__main__':
     )
 
     print(model)
+    training_start = time.time()
+    trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint='latest',)
+    print(">>>>> finished training in {:6f} seconds <<<<<<".format(tiem.time() - training_start))
     
-    trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint='latest')
-
     # save mesh
     #trainer.save_mesh()
     test_dataset = NeRFDataset(opt.path, 'test', radius=opt.radius, n_test=10)
