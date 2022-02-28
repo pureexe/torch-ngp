@@ -69,7 +69,10 @@ if __name__ == '__main__':
 
     print(model)
 
-    criterion = torch.nn.SmoothL1Loss()
+    #criterion = torch.nn.SmoothL1Loss()
+    criterion = torch.nn.HuberLoss()
+    #criterion = torch.nn.MSELoss()    
+    print("INSTANT-NPG paper use HuberLoss i guess?")
 
     if hasattr(model, 'encoders'):
         encoding_params = []
@@ -85,7 +88,7 @@ if __name__ == '__main__':
     #scheduler = lambda optimizer: optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 100, 150], gamma=0.33)
     mile_stone = opt.num_epoch // 4
     scheduler = lambda optimizer: optim.lr_scheduler.MultiStepLR(optimizer, milestones=[mile_stone, mile_stone * 2, mile_stone * 3], gamma=0.33)
-    #scheduler = lambda optimizer: optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9, last_epoch=opt.num_epoch)
+    #scheduler = lambda optimizer: optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.962709)
 
 
     print(model)

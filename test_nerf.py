@@ -13,6 +13,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num_rays', type=int, default=4096)
     parser.add_argument('--num_steps', type=int, default=128)
+    parser.add_argument('--num_epoch', type=int, default=200)
+    parser.add_argument('--eval_interval', type=int, default=10)
     parser.add_argument('--upsample_steps', type=int, default=128)
     parser.add_argument('--max_ray_batch', type=int, default=4096) # lower if OOM
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
@@ -56,10 +58,10 @@ if __name__ == '__main__':
     print(model)
     training_start = time.time()
     trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint='latest',)
-    print(">>>>> finished training in {:6f} seconds <<<<<<".format(tiem.time() - training_start))
     
     # save mesh
     #trainer.save_mesh()
-    test_dataset = NeRFDataset(opt.path, 'test', radius=opt.radius, n_test=10)
+    test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1)
     trainer.test(test_loader)
+    print(">>>>> finished testing in {:6f} seconds <<<<<<".format(time.time() - training_start))

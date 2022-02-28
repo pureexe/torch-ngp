@@ -21,6 +21,9 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from torch.utils.data import Dataset, DataLoader
 
+import json
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+
 import trimesh
 import mcubes
 from rich.console import Console
@@ -81,8 +84,9 @@ def get_rays(c2w, intrinsics, H, W, N_rays=-1):
     pixel_points_cam = lift(i, j, torch.ones_like(i), intrinsics=intrinsics)
     pixel_points_cam = pixel_points_cam.transpose(-1, -2)
 
-    world_coords = torch.bmm(c2w, pixel_points_cam).transpose(-1, -2)[..., :3]
-    
+    world_coords = torch.bmm(c2w, pixel_points_cam).transpose(-1, -2)#[..., :3]
+    world_coords = world_coords[...,:3] / (world_coords[...,3:4].expand(-1,-1,3) + 1e-15)
+
     rays_d = world_coords - rays_o[..., None, :]
     rays_d = F.normalize(rays_d, dim=-1)
 
@@ -390,12 +394,21 @@ class Trainer(object):
         os.makedirs(save_path, exist_ok=True)
         
         self.log(f"==> Start Test, save results to {save_path}")
-
+        scores = {
+            "psnr": [],
+            "ssim": []
+        }
         pbar = tqdm.tqdm(total=len(loader) * loader.batch_size, bar_format='{percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         self.model.eval()
         with torch.no_grad():
             for i, data in enumerate(loader):
-                
+                # prepare backgroudn color
+                bg_color = torch.ones(3, device=data['image'].device) # [3], fixed white background
+                image = data['image']
+                if image.shape[-1] == 4:
+                    gt_rgb = image[..., :3] * image[..., 3:] + bg_color * (1 - image[..., 3:])
+                gt_rgb = gt_rgb[0].cpu().numpy()
+
                 data = self.prepare_data(data)
 
                 with torch.cuda.amp.autocast(enabled=self.fp16):
@@ -405,12 +418,21 @@ class Trainer(object):
                 path_depth = os.path.join(save_path, f'{i:04d}_depth.png')
 
                 #self.log(f"[INFO] saving test image to {path}")
+                rgb_pred = preds[0].detach().cpu().numpy()
+                scores["psnr"].append(float(peak_signal_noise_ratio(rgb_pred, gt_rgb, data_range=1.0)))
+                scores["ssim"].append(float(structural_similarity(rgb_pred, gt_rgb, win_size=11, data_range=1.0, multichannel=True, gaussian_weights=True)))
 
-                cv2.imwrite(path, cv2.cvtColor((preds[0].detach().cpu().numpy() * 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+                cv2.imwrite(path, cv2.cvtColor((rgb_pred * 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
                 cv2.imwrite(path_depth, (preds_depth[0].detach().cpu().numpy() * 255).astype(np.uint8))
 
                 pbar.update(loader.batch_size)
-
+             
+        scores['average'] = {
+            'psnr': np.mean(np.array(scores["psnr"])),
+            'ssim': np.mean(np.array(scores["ssim"]))
+        }
+        with open(os.path.join(save_path, 'score.json'),'w') as f:
+            json.dump(scores,f,indent=4,sort_keys=True)
         self.log(f"==> Finished Test.")
     
     # [GUI] just train for 16 steps, without any other overhead that may slow down rendering.
