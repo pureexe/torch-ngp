@@ -15,8 +15,8 @@ class NeRFNetwork(NeRFRenderer):
                  geo_feat_dim=15,
                  num_layers_color=3,
                  hidden_dim_color=64,
+                 log2_hashmap_size=19,
                  cuda_ray=False,
-                 **kwargs
                  ):
         super().__init__(cuda_ray)
 
@@ -37,9 +37,9 @@ class NeRFNetwork(NeRFRenderer):
                     "otype": "HashGrid",
                     "n_levels": self.n_levels,
                     "n_features_per_level": self.n_features_per_level,
-                    "log2_hashmap_size": 19,
+                    "log2_hashmap_size": log2_hashmap_size,
                     "base_resolution": 16,
-                    "per_level_scale": 1.3819,
+                    "per_level_scale":  1.3819,
                 },
               )
             )

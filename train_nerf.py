@@ -15,10 +15,11 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num_rays', type=int, default=4096)
     parser.add_argument('--num_steps', type=int, default=128)
-    parser.add_argument('--num_epoch', type=int, default=200)
+    parser.add_argument('--num_epoch', type=int, default=310)
     parser.add_argument('--eval_interval', type=int, default=10)
     parser.add_argument('--upsample_steps', type=int, default=128)
     parser.add_argument('--max_ray_batch', type=int, default=4096)
+    parser.add_argument('--hash_size', type=int, default=19, help="hashmap size in term of 2^n")
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
     parser.add_argument('--ff', action='store_true', help="use fully-fused MLP")
     parser.add_argument('--tcnn', action='store_true', help="use TCNN backend")
@@ -30,11 +31,16 @@ if __name__ == '__main__':
     parser.add_argument('--scale', type=float, default=0.33, help="scale camera location into box(-bound, bound)")
 
     parser.add_argument('--cuda_ray', action='store_true', help="use CUDA raymarching instead of pytorch")
+    parser.add_argument('--skip_if_exist', action='store_true', help="if thje work space")
 
     opt = parser.parse_args()
 
     print(opt)
-
+    if opt.skip_if_exist and os.path.exists(opt.workspace):
+        print("Skiping existed experiment: ", opt.workspace)
+        exit()
+    else:
+        print(opt.workspace)
     if opt.plane3:
         from nerf.network_plane3 import NeRFNetwork
         print('NeRF: plane3')
@@ -63,6 +69,7 @@ if __name__ == '__main__':
         encoding="hashgrid", encoding_dir="sphere_harmonics", 
         num_layers=2, hidden_dim=64, geo_feat_dim=15, num_layers_color=3, hidden_dim_color=64, 
         cuda_ray=opt.cuda_ray,
+        log2_hashmap_size=opt.hash_size
     )
 
     #model = NeRFNetwork(encoding="frequency", encoding_dir="frequency", num_layers=4, hidden_dim=256, geo_feat_dim=256, num_layers_color=4, hidden_dim_color=128)
