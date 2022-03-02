@@ -163,7 +163,7 @@ class NeRFGUI:
                     dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 3, 3)
 
             # time
-            if self.opt.train:
+            if not self.opt.test:
                 with dpg.group(horizontal=True):
                     dpg.add_text("Train time: ")
                     dpg.add_text("no data", tag="_log_train_time")                    
@@ -177,7 +177,7 @@ class NeRFGUI:
                 dpg.add_text("1", tag="_log_spp")
 
             # train button
-            if self.opt.train:
+            if not self.opt.test:
                 with dpg.collapsing_header(label="Train", default_open=True):
                     with dpg.group(horizontal=True):
                         dpg.add_text("Train: ")
@@ -331,62 +331,3 @@ class NeRFGUI:
                 self.train_step()
             self.test_step()
             dpg.render_dearpygui_frame()
-
-
-
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('path', type=str)
-    parser.add_argument('--workspace', type=str, default='workspace')
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--num_rays', type=int, default=4096)
-    parser.add_argument('--W', type=int, default=800)
-    parser.add_argument('--H', type=int, default=800)
-    parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
-    parser.add_argument('--ff', action='store_true', help="use fully-fused MLP")
-    parser.add_argument('--tcnn', action='store_true', help="use TCNN backend")
-    parser.add_argument('--cuda_ray', action='store_true', help="use CUDA raymarching instead of pytorch")
-
-    parser.add_argument('--mode', type=str, default='colmap', help="dataset mode, supports (colmap, blender)")
-    parser.add_argument('--bound', type=float, default=2, help="assume the scene is bounded in box(-bound, bound)")
-    parser.add_argument('--scale', type=float, default=0.33, help="scale camera location into box(-bound, bound)")
-    
-    parser.add_argument('--radius', type=float, default=3, help="default camera radius from center")
-    parser.add_argument('--max_spp', type=int, default=32)
-    parser.add_argument('--train', action='store_true', help="train the model through GUI")
-
-    opt = parser.parse_args()
-
-    if opt.ff:
-        assert opt.fp16, "fully-fused mode must be used with fp16 mode"
-        from nerf.network_ff import NeRFNetwork
-    elif opt.tcnn:
-        from nerf.network_tcnn import NeRFNetwork
-    else:
-        from nerf.network import NeRFNetwork    
-
-    seed_everything(opt.seed)
-
-    model = NeRFNetwork(
-        encoding="hashgrid", encoding_dir="sphere_harmonics", 
-        num_layers=2, hidden_dim=64, geo_feat_dim=15, num_layers_color=3, hidden_dim_color=64, 
-        cuda_ray=opt.cuda_ray,
-    )        
-
-    if opt.train:
-        train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale)
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
-        criterion = torch.nn.SmoothL1Loss()
-        optimizer = lambda model: torch.optim.Adam([
-            {'name': 'encoding', 'params': list(model.encoder.parameters())},
-            {'name': 'net', 'params': list(model.sigma_net.parameters()) + list(model.color_net.parameters()), 'weight_decay': 1e-6},
-        ], lr=1e-2, betas=(0.9, 0.99), eps=1e-15)
-        scheduler = lambda optimizer: optim.lr_scheduler.MultiStepLR(optimizer, milestones=[500, 1000, 1500], gamma=0.33)
-        trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint='latest')
-        trainer.train_loader = train_loader # attach dataloader to trainer
-    else:
-        trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint='latest')
-
-    gui = NeRFGUI(opt, trainer)
-    gui.render()
