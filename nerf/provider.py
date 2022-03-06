@@ -178,6 +178,9 @@ class NeRFDataset(Dataset):
             'index': index,
         }
 
+        if hasattr(self, 'encoder_weights'): #pure: add encoder weight here
+            results['encoder_weights'] = self.encoder_weights[index]
+
         if self.type == 'test':
             # only string can bypass the default collate, so we don't need to call item: https://github.com/pytorch/pytorch/blob/67a275c29338a6c6cc405bf143e63d53abe600bf/torch/utils/data/_utils/collate.py#L84
             results['H'] = str(self.H)

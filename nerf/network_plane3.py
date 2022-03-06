@@ -17,6 +17,7 @@ class NeRFNetwork(NeRFRenderer):
                  hidden_dim_color=64,
                  log2_hashmap_size=19,
                  cuda_ray=False,
+                 **kwargs
                  ):
         super().__init__(cuda_ray)
 
@@ -81,7 +82,7 @@ class NeRFNetwork(NeRFRenderer):
                 "n_hidden_layers": num_layers_color - 1,
             },
         )
-        #self.encoder = torch.nn.ParameterList(self.encoders) #require to make save & load weight work
+        self.encoder = torch.nn.ModuleList(self.encoders) #require to make save & load weight work
 
     def projected_to_plane(self, x):
         # x: [B,N,3] contain position x and y and z
@@ -106,7 +107,7 @@ class NeRFNetwork(NeRFRenderer):
         return h
 
 
-    def forward(self, x, d, bound):
+    def forward(self, x, d, bound, **kwargs):
         # x: [B, N, 3], in [-bound, bound]
         # d: [B, N, 3], nomalized in [-1, 1]
 
@@ -140,7 +141,7 @@ class NeRFNetwork(NeRFRenderer):
 
         return sigma, color
 
-    def density(self, x, bound):
+    def density(self, x, bound, **kwargs):
         # x: [B, N, 3], in [-bound, bound]
 
         prefix = x.shape[:-1]

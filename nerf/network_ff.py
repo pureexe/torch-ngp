@@ -36,6 +36,7 @@ class NeRFNetwork(NeRFRenderer):
                  num_layers_color=3,
                  hidden_dim_color=64,
                  cuda_ray=False,
+                 **kwargs
                  ):
         super().__init__(cuda_ray)
 
@@ -65,7 +66,7 @@ class NeRFNetwork(NeRFRenderer):
             num_layers=self.num_layers_color,
         )
     
-    def forward(self, x, d, bound):
+    def forward(self, x, d, bound, **kwargs):
         # x: [B, N, 3], in [-bound, bound]
         # d: [B, N, 3], nomalized in [-1, 1]
 
@@ -99,7 +100,7 @@ class NeRFNetwork(NeRFRenderer):
 
         return sigma, color
 
-    def density(self, x, bound):
+    def density(self, x, bound, **kwargs):
         # x: [B, N, 3], in [-bound, bound]
 
         prefix = x.shape[:-1]
