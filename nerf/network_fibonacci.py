@@ -121,8 +121,6 @@ class NeRFNetwork(NeRFRenderer):
         x = x / torch.norm(x,dim=-1)[...,None]
         y = torch.cross(n, x, dim=-1)
         projected = torch.cat([x[...,None,:],y[...,None,:]],dim=-2)
-        print(projected)
-        exit()
         return projected
 
     def projected_to_plane(self, a, plane_id):
