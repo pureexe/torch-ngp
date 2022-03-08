@@ -18,8 +18,13 @@ class NeRFRenderer(BaseRenderer):
             rendererd = None
             if self.training:
                 # we render only a ray from one plane on training step
-                idx = encoder_weights[:,:,1].multinomial(1,replacement=False)[...,0] #pick 1 plane from encoder_weight shape:[B]
-                plane_id = encoder_weights[:,:,0][idx][0] # shape:[B]
+                idx = encoder_weights[:,:,1].multinomial(1,replacement=False) #pick 1 plane from encoder_weight shape:[B]
+                plane_ids = encoder_weights[:,:,0] # shape:[B]
+                plane_id = []
+                # TODO: blocking operator need to be FIX when use multiple batch, but fine for now i guess?
+                for i in range(idx.shape[0]):
+                    plane_id.append(plane_ids[i,idx[i, 0]][None])
+                plane_id = torch.cat(plane_id)
                 rendered = runner_fn(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, plane_id)
             else: 
                 # similar to NeX360, we blend the result from multiple plane
@@ -148,12 +153,10 @@ class NeRFRenderer(BaseRenderer):
             # rays_o, rays_d: [B, N, 3], assumes B == 1
             # return: pred_rgb: [B, N, 3]
 
-            """
             if self.cuda_ray:
                 _run = self.run_cuda
             else:
-                _run = self.run
-            """
+                _run = self.run_hierarchy_plane
 
             B, N = rays_o.shape[:2]
             device = rays_o.device
@@ -168,12 +171,12 @@ class NeRFRenderer(BaseRenderer):
                     head = 0
                     while head < N:
                         tail = min(head + max_ray_batch, N)
-                        depth_, image_ = self.run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights, runner_fn=self.run_hierarchy_plane)
+                        depth_, image_ = self.run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights, runner_fn=_run)
                         depth[b:b+1, head:tail] = depth_
                         image[b:b+1, head:tail] = image_
                         head += max_ray_batch
             else:
-                depth, image = self.run(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights,  runner_fn=self.run_cuda)
+                depth, image = self.run(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights,  runner_fn=_run)
 
             results = {}
             results['depth'] = depth

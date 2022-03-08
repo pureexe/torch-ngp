@@ -36,7 +36,8 @@ if __name__ == '__main__':
     parser.add_argument('--fibonacci', type=int, default=0, help="use fibonacci lattice plane if more than 0") #pure
     parser.add_argument('--blend_lattice', type=int, default=1, help="blend n [1,2,3] lattice (default: 1). note that 3 will be delauney version") #pure
     parser.add_argument('--global_tri', action='store_true', help="if enable, it will append tri plane project to encoder") #pure
-    parser.add_argument('--refiner_ratio',type=float, default=0, help="use fiborefiner network if more than 0") #pure
+    parser.add_argument('--refiner_ratio',type=float, default=-1, help="use fiborefiner network if >= 0") #pure
+    parser.add_argument('--train_plane_mode',type=str, default="", help="train plane picking scheme") #pure
 
     ### dataset options
     parser.add_argument('--mode', type=str, default='colmap', help="dataset mode, supports (colmap, blender)")
@@ -56,7 +57,8 @@ if __name__ == '__main__':
     
     seed_everything(opt.seed)
 
-    if opt.refiner_ratio > 0:
+    if opt.refiner_ratio >= 0:
+        print('Network: FiboRefiner')
         from nerf.network_fiborefiner import NeRFNetwork
         from nerf.trainer_fibonacci import Trainer
     elif opt.fibonacci > 0:
@@ -143,9 +145,10 @@ if __name__ == '__main__':
             test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=False)
 
             if opt.fibonacci > 0:
-                train_dataset = add_encoder_weights(train_dataset,mode=opt.blend_lattice)
-                valid_dataset = add_encoder_weights(valid_dataset,mode=opt.blend_lattice)
-                test_dataset = add_encoder_weights(test_dataset,mode=opt.blend_lattice)
+                train_plane_mode = opt.blend_lattice if opt.train_plane_mode == "" else opt.train_plane_mode
+                train_dataset = add_encoder_weights(train_dataset, opt.fibonacci, mode=train_plane_mode)
+                valid_dataset = add_encoder_weights(valid_dataset, opt.fibonacci, mode=opt.blend_lattice)
+                test_dataset = add_encoder_weights(test_dataset, opt.fibonacci, mode=opt.blend_lattice)
 
 
             train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)

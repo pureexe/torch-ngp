@@ -70,7 +70,7 @@ class NeRFNetwork(NeRFRenderer):
 
         self.encoder = torch.nn.ParameterList([encoder.params for encoder in self.encoders]) #require to make save & load weight work
 
-        if 'refiner_ratio' in kwargs:
+        if 'refiner_ratio' in kwargs and kwargs['refiner_ratio'] >= 0:
             plane_per_fetch = 3
         elif self.global_tri:
             plane_per_fetch = 4
@@ -139,7 +139,7 @@ class NeRFNetwork(NeRFRenderer):
         """
         # get normal
         num_rays = a.shape[1]
-        n = self.plane_normal[plane_id].to(a.device) #shape:[B,3]
+        n = self.plane_normal[plane_id].to(a.device) #shape:[B,3] 
         # othogonal projection
         b = a - (a[..., None, :3] @ n[...,None])[...,0].expand(-1,-1,3) * n #shape:[B, rays,3]
         projected_vector = self.projected_vector[plane_id].to(a.device) #shape:[B,2,3]
