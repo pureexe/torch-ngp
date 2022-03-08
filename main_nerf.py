@@ -21,6 +21,9 @@ if __name__ == '__main__':
     parser.add_argument('--eval_interval',type=int, default=50) #pure
     parser.add_argument('--num_rays', type=int, default=4096)
     parser.add_argument('--cuda_ray', action='store_true', help="use CUDA raymarching instead of pytorch")
+    parser.add_argument('--preload', dest='preload', action='store_true')
+    parser.add_argument('--no_preload', dest='preload', action='store_false')
+    parser.set_defaults(preload=True)
     # (only valid when not using --cuda_ray)
     parser.add_argument('--num_steps', type=int, default=128)
     parser.add_argument('--upsample_steps', type=int, default=128)
@@ -33,6 +36,7 @@ if __name__ == '__main__':
     parser.add_argument('--fibonacci', type=int, default=0, help="use fibonacci lattice plane if more than 0") #pure
     parser.add_argument('--blend_lattice', type=int, default=1, help="blend n [1,2,3] lattice (default: 1). note that 3 will be delauney version") #pure
     parser.add_argument('--global_tri', action='store_true', help="if enable, it will append tri plane project to encoder") #pure
+    parser.add_argument('--refiner_ratio',type=float, default=0, help="use fiborefiner network if more than 0") #pure
 
     ### dataset options
     parser.add_argument('--mode', type=str, default='colmap', help="dataset mode, supports (colmap, blender)")
@@ -52,7 +56,10 @@ if __name__ == '__main__':
     
     seed_everything(opt.seed)
 
-    if opt.fibonacci > 0:
+    if opt.refiner_ratio > 0:
+        from nerf.network_fiborefiner import NeRFNetwork
+        from nerf.trainer_fibonacci import Trainer
+    elif opt.fibonacci > 0:
         print('Network: Fibonacci')
         from nerf.network_fibonacci import NeRFNetwork
         from nerf.trainer_fibonacci import Trainer
@@ -81,7 +88,8 @@ if __name__ == '__main__':
         cuda_ray=opt.cuda_ray,
         fibonacci=opt.fibonacci,
         blend_lattice=opt.blend_lattice,
-        global_tri=opt.global_tri
+        global_tri=opt.global_tri,
+        refiner_ratio=opt.refiner_ratio
     )
     #model = NeRFNetwork(encoding="frequency", encoding_dir="frequency", num_layers=4, hidden_dim=256, geo_feat_dim=256, num_layers_color=4, hidden_dim_color=128)
     print(model)
@@ -130,9 +138,9 @@ if __name__ == '__main__':
             gui.render()
         
         else:
-            train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale)
-            valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=1, scale=opt.scale)
-            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale)
+            train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale, preload=False)
+            valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=1, scale=opt.scale, preload=False)
+            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=False)
 
             if opt.fibonacci > 0:
                 train_dataset = add_encoder_weights(train_dataset,mode=opt.blend_lattice)

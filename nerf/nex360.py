@@ -100,8 +100,12 @@ def add_encoder_weights(dataset, mode='closet'):
   if mode == 1: mode = 'closet'
   if mode == 2: mode = 'linear'
   if mode == 3: mode = 'delauney'
-
-  ids, weights = get_encoder_weights(dataset.poses[:,:3,3].cpu().numpy())
+  
+  poses = dataset.poses[:,:3,3]
+  is_preload = torch.is_tensor(poses)
+  poses = poses.cpu().numpy() if is_preload else poses
+  ids, weights = get_encoder_weights(poses)
   merge_weights = np.concatenate([ids[...,None], weights[...,None]], axis=-1)
-  dataset.encoder_weights = torch.from_numpy(merge_weights).cuda()
+  merge_weights = torch.from_numpy(merge_weights).cuda() if is_preload else merge_weights
+  dataset.encoder_weights = merge_weights 
   return dataset

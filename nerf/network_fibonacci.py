@@ -46,16 +46,16 @@ class NeRFNetwork(NeRFRenderer):
         self.global_tri = global_tri
         num_encoder = fibonacci if not global_tri else fibonacci + 3
 
-        self.plane_normal = torch.from_numpy(get_uniform_sphere(num = fibonacci, is_hemi = True, radius = 1.0))[...,:3,3].cuda()
+        self.plane_normal = torch.from_numpy(get_uniform_sphere(num = fibonacci, is_hemi = True, radius = 1.0))[...,:3,3]
         if self.global_tri:
-            self.plane_normal = torch.cat([self.plane_normal, torch.eye(3, dtype=self.plane_normal.dtype).cuda()],dim=0)
+            self.plane_normal = torch.cat([self.plane_normal, torch.eye(3, dtype=self.plane_normal.dtype)],dim=0)
 
         self.projected_vector = self.precompute_projected_vector()
         
 
         for i in range(num_encoder):
             self.encoders.append(
-                tcnn.Encoding(
+                (tcnn.Encoding(
                 n_input_dims=2,
                 encoding_config={
                     "otype": "HashGrid",
@@ -65,13 +65,18 @@ class NeRFNetwork(NeRFRenderer):
                     "base_resolution": 16,
                     "per_level_scale":  1.3819,
                 },
-              )
+              ))
             )
 
-        self.encoder = torch.nn.ModuleList(self.encoders) #require to make save & load weight work
+        self.encoder = torch.nn.ParameterList([encoder.params for encoder in self.encoders]) #require to make save & load weight work
 
-        plane_per_fetch = 1 if not self.global_tri else 4
-        self.sigma_net = tcnn.Network(
+        if 'refiner_ratio' in kwargs:
+            plane_per_fetch = 3
+        elif self.global_tri:
+            plane_per_fetch = 4
+        else: 
+            plane_per_fetch = 1    
+        self.sigma_net = (tcnn.Network(
             n_input_dims=(self.n_levels * self.n_features_per_level) * plane_per_fetch,
             n_output_dims=1 + self.geo_feat_dim,
             network_config={
@@ -81,23 +86,23 @@ class NeRFNetwork(NeRFRenderer):
                 "n_neurons": hidden_dim,
                 "n_hidden_layers": num_layers - 1,
             },
-        )
+        ))
 
         # color network
         self.num_layers_color = num_layers_color        
         self.hidden_dim_color = hidden_dim_color
 
-        self.encoder_dir = tcnn.Encoding(
+        self.encoder_dir = (tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
                 "otype": "SphericalHarmonics",
                 "degree": 4,
             },
-        )
+        ))
 
         self.in_dim_color = self.encoder_dir.n_output_dims + self.geo_feat_dim
 
-        self.color_net = tcnn.Network(
+        self.color_net = (tcnn.Network(
             n_input_dims=self.in_dim_color,
             n_output_dims=3,
             network_config={
@@ -107,7 +112,7 @@ class NeRFNetwork(NeRFRenderer):
                 "n_neurons": hidden_dim_color,
                 "n_hidden_layers": num_layers_color - 1,
             },
-        )
+        ))
 
     def precompute_projected_vector(self):
         """
@@ -116,7 +121,7 @@ class NeRFNetwork(NeRFRenderer):
         @return projected shape[...,2,3] where 2 is channel x and y
         """
         n = self.plane_normal
-        x = torch.tensor([1.0,0.0,0.0]).float().cuda()[None].expand(n.shape[0],-1)
+        x = torch.tensor([1.0,0.0,0.0]).float()[None].expand(n.shape[0],-1)
         x = x - (x[..., None, :3] @ n[...,None])[0] * n
         x = x / torch.norm(x,dim=-1)[...,None]
         y = torch.cross(n, x, dim=-1)
@@ -134,12 +139,13 @@ class NeRFNetwork(NeRFRenderer):
         """
         # get normal
         num_rays = a.shape[1]
-        n = self.plane_normal[plane_id] #shape:[B,3]
+        n = self.plane_normal[plane_id].to(a.device) #shape:[B,3]
         # othogonal projection
         b = a - (a[..., None, :3] @ n[...,None])[...,0].expand(-1,-1,3) * n #shape:[B, rays,3]
-        projected_vector = self.projected_vector[plane_id] #shape:[B,2,3]
+        projected_vector = self.projected_vector[plane_id].to(a.device) #shape:[B,2,3]
         x = (projected_vector[:,0:1,None,:].expand(-1,num_rays,-1, -1) @ b[...,None])[...,0]
         y = (projected_vector[:,1:2,None,:].expand(-1,num_rays,-1, -1) @ b[...,None])[...,0]
+
         p = torch.cat([x,y],dim=-1)
         return p
 
@@ -158,7 +164,7 @@ class NeRFNetwork(NeRFRenderer):
         return projected
     """
 
-
+    
     def get_geo_feature(self, x, plane_id):
         plane_id = plane_id.long()
         projected = self.projected_to_plane(x, plane_id)
@@ -170,7 +176,7 @@ class NeRFNetwork(NeRFRenderer):
         if self.global_tri:
             prefix = x.shape[:-1]
             for i in range(3):
-                plane_id = torch.tensor([self.n_projectors+i]).cuda().expand(x.shape[0])
+                plane_id = torch.tensor([self.n_projectors+i]).to(x.device).expand(x.shape[0])
                 projected = self.projected_to_plane(x, plane_id)
                 feature = self.encoders[plane_id](projected.view(-1, 2)) 
                 feature = feature.view(*prefix,-1)

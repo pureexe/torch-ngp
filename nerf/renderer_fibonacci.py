@@ -1,4 +1,5 @@
 import torch
+import raymarching
 
 from .renderer import NeRFRenderer as BaseRenderer
 from .renderer import near_far_from_bound, sample_pdf
@@ -8,7 +9,7 @@ class NeRFRenderer(BaseRenderer):
             print("Renderer: fibonacci renderer")
             super().__init__(*args,**kwargs)
 
-        def run(self, rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights):
+        def run(self, rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights, runner_fn):
             """
             render using nerf sampling
             @params encoder_weights - shape:[B,I,2]
@@ -19,13 +20,13 @@ class NeRFRenderer(BaseRenderer):
                 # we render only a ray from one plane on training step
                 idx = encoder_weights[:,:,1].multinomial(1,replacement=False)[...,0] #pick 1 plane from encoder_weight shape:[B]
                 plane_id = encoder_weights[:,:,0][idx][0] # shape:[B]
-                rendered = self.run_hierarchy_plane(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, plane_id)
+                rendered = runner_fn(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, plane_id)
             else: 
                 # similar to NeX360, we blend the result from multiple plane
                 for i in range(encoder_weights.shape[-2]):
                     plane_id = encoder_weights[:,i,0]
                     plane_weight = encoder_weights[:,i,1]
-                    rendered_plane = self.run_hierarchy_plane(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, plane_id)
+                    rendered_plane = runner_fn(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, plane_id)
                     rendered_plane = list(rendered_plane)
                     # weight the color
                     for j in range(len(rendered_plane)):
@@ -143,18 +144,16 @@ class NeRFRenderer(BaseRenderer):
 
             return depth, image
 
-
-        def run_cuda(self, rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=None):
-            raise NotImplementedError("run_cuda is not supported by rendererd_fibonacci yet")
-
         def render(self, rays_o, rays_d, bound=1, num_steps=128, upsample_steps=128, staged=False, max_ray_batch=4096, bg_color=None, perturb=False, **kwargs):
             # rays_o, rays_d: [B, N, 3], assumes B == 1
             # return: pred_rgb: [B, N, 3]
 
+            """
             if self.cuda_ray:
                 _run = self.run_cuda
             else:
                 _run = self.run
+            """
 
             B, N = rays_o.shape[:2]
             device = rays_o.device
@@ -169,15 +168,100 @@ class NeRFRenderer(BaseRenderer):
                     head = 0
                     while head < N:
                         tail = min(head + max_ray_batch, N)
-                        depth_, image_ = _run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights)
+                        depth_, image_ = self.run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights, runner_fn=self.run_hierarchy_plane)
                         depth[b:b+1, head:tail] = depth_
                         image[b:b+1, head:tail] = image_
                         head += max_ray_batch
             else:
-                depth, image = _run(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights)
+                depth, image = self.run(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, encoder_weights=encoder_weights,  runner_fn=self.run_cuda)
 
             results = {}
             results['depth'] = depth
             results['rgb'] = image
                 
             return results
+
+        def run_cuda(self, rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb, plane_id):
+        # rays_o, rays_d: [B, N, 3], assumes B == 1
+        # return: image: [B, N, 3], depth: [B, N]
+
+            B, N = rays_o.shape[:2]
+            device = rays_o.device
+
+            if bg_color is None:
+                bg_color = torch.ones(3, dtype=rays_o.dtype, device=device)
+
+            if self.training:
+                # setup counter
+                counter = self.step_counter[self.local_step % 64]
+                counter.zero_() # set to 0
+                self.local_step += 1
+
+                xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, bound, self.density_grid, self.mean_density, self.iter_density, counter, self.mean_count, perturb, 128, False)
+                sigmas, rgbs = self(xyzs, dirs, bound=bound, plane_id=plane_id)
+                depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, bound, bg_color)
+
+            else:
+
+                # xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, bound, self.density_grid, self.mean_density, self.iter_density, None, self.mean_count, self.training, 128, True)
+                # sigmas, rgbs = self(xyzs, dirs, bound=bound)
+                # depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, bound, bg_color)
+
+                # allocate outputs 
+                # if use autocast, must init as half so it won't be autocasted and lose reference.
+                dtype = torch.half if torch.is_autocast_enabled() else torch.float32
+                
+                weights_sum = torch.zeros(B * N, dtype=dtype, device=device)
+                depth = torch.zeros(B * N, dtype=dtype, device=device)
+                image = torch.zeros(B * N, 3, dtype=dtype, device=device)
+                
+                n_alive = B * N
+                alive_counter = torch.zeros([1], dtype=torch.int32, device=device)
+
+                rays_alive = torch.zeros(2, n_alive, dtype=torch.int32, device=device) # 2 is used to loop old/new
+                rays_t = torch.zeros(2, n_alive, dtype=dtype, device=device)
+
+                # pre-calculate near far
+                near, far = near_far_from_bound(rays_o, rays_d, bound, type='cube')
+                near = near.view(B * N)
+                far = far.view(B * N)
+
+                step = 0
+                i = 0
+                while step < 1024: # max step
+
+                    # count alive rays 
+                    if step == 0:
+                        # init rays at first step.
+                        torch.arange(n_alive, out=rays_alive[0])
+                        rays_t[0] = near
+                    else:
+                        alive_counter.zero_()
+                        raymarching.compact_rays(n_alive, rays_alive[i % 2], rays_alive[(i + 1) % 2], rays_t[i % 2], rays_t[(i + 1) % 2], alive_counter)
+                        n_alive = alive_counter.item() # must invoke D2H copy here
+                    
+                    # exit loop
+                    if n_alive <= 0:
+                        break
+
+                    # decide compact_steps
+                    n_step = max(min(B * N // n_alive, 8), 1)
+
+                    xyzs, dirs, deltas = raymarching.march_rays(n_alive, n_step, rays_alive[i % 2], rays_t[i % 2], rays_o, rays_d, bound, self.density_grid, self.mean_density, near, far, 128, perturb)
+                    sigmas, rgbs = self(xyzs, dirs, bound=bound, plane_id=plane_id)
+                    raymarching.composite_rays(n_alive, n_step, rays_alive[i % 2], rays_t[i % 2], sigmas, rgbs, deltas, weights_sum, depth, image)
+
+                    #print(f'step = {step}, n_step = {n_step}, n_alive = {n_alive}')
+
+                    step += n_step
+                    i += 1
+
+                # composite bg & rectify depth (shade_kernel_nerf)
+                image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
+                depth = torch.clamp(depth - near, min=0) / (far - near)
+
+
+            depth = depth.reshape(B, N)
+            image = image.reshape(B, N, 3)
+
+            return depth, image
