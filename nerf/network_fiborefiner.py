@@ -77,7 +77,7 @@ class NeRFNetwork(FibonacciNetwork):
         plane_feat = self.get_plane_feature(x, plane_id).view(-1,self.n_levels * self.n_features_per_level)
         features = torch.cat([plane_feat, sigma[...,None], geo_feat], dim=-1)
         h2 = self.refine_net(features)
-        sigma = sigma + self.refiner_ratio * F.sigmoid(h2[...,0])
+        sigma = sigma + self.refiner_ratio * F.tanh(h2[...,0])
         geo_feat = h2[...,1:]
 
         # flatten view direction to support tiny-cuda-nn

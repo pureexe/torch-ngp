@@ -38,6 +38,8 @@ if __name__ == '__main__':
     parser.add_argument('--global_tri', action='store_true', help="if enable, it will append tri plane project to encoder") #pure
     parser.add_argument('--refiner_ratio',type=float, default=-1, help="use fiborefiner network if >= 0") #pure
     parser.add_argument('--train_plane_mode',type=str, default="", help="train plane picking scheme") #pure
+    parser.add_argument('--og', action='store_true', help="use original nerf")
+    parser.add_argument('--learning_rate', type=float, default=1e-2)
 
     ### dataset options
     parser.add_argument('--mode', type=str, default='colmap', help="dataset mode, supports (colmap, blender)")
@@ -56,8 +58,11 @@ if __name__ == '__main__':
     print(opt)
     
     seed_everything(opt.seed)
-
-    if opt.refiner_ratio >= 0:
+    
+    if opt.og:
+        from nerf.network_nerf import NeRFNetwork
+        from nerf.utils import Trainer
+    elif opt.refiner_ratio >= 0:
         print('Network: FiboRefiner')
         from nerf.network_fiborefiner import NeRFNetwork
         from nerf.trainer_fibonacci import Trainer
@@ -118,7 +123,7 @@ if __name__ == '__main__':
         optimizer = lambda model: torch.optim.Adam([
             {'name': 'encoding', 'params': list(model.encoder.parameters())},
             {'name': 'net', 'params': list(model.sigma_net.parameters()) + list(model.color_net.parameters()), 'weight_decay': 1e-6},
-        ], lr=1e-2, betas=(0.9, 0.99), eps=1e-15)
+        ], lr=opt.learning_rate, betas=(0.9, 0.99), eps=1e-15)
 
         # need different milestones for GUI/CMD mode.
         quatuer_stone = opt.num_epochs // 4#pure
@@ -140,9 +145,9 @@ if __name__ == '__main__':
             gui.render()
         
         else:
-            train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale, preload=False)
-            valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=1, scale=opt.scale, preload=False)
-            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=False)
+            train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale, preload=opt.preload)
+            valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=1, scale=opt.scale, preload=opt.preload) #should be val
+            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=opt.preload)
 
             if opt.fibonacci > 0:
                 train_plane_mode = opt.blend_lattice if opt.train_plane_mode == "" else opt.train_plane_mode
