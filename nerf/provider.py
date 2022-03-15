@@ -1,16 +1,11 @@
-from operator import index
 import os
-import time
 import glob
-from turtle import down
 import numpy as np
 
 import cv2
-from PIL import Image
 
 import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
 from scipy.spatial.transform import Slerp, Rotation
 
@@ -91,6 +86,7 @@ class NeRFDataset(Dataset):
             slerp = Slerp([0, 1], rots)
 
             self.poses = []
+            self.images = None
             for i in range(n_test + 1):
                 ratio = np.sin(((i / n_test) - 0.5) * np.pi) * 0.5 + 0.5
                 pose = np.eye(4, dtype=np.float32)
@@ -100,8 +96,12 @@ class NeRFDataset(Dataset):
 
         else:
             # for colmap, manually split a valid set (the first frame).
-            if mode == 'colmap':    
-                frames = frames[1:] if type == 'train' else frames[:1]
+            if mode == 'colmap':
+                if type == 'train':
+                    frames = frames[1:]
+                elif type == 'val':
+                    frames = frames[:1]
+                # else 'all': use all frames
             
             self.poses = []
             self.images = []
@@ -135,11 +135,13 @@ class NeRFDataset(Dataset):
                 self.images.append(image)
             
         self.poses = np.stack(self.poses, axis=0)
-        self.images = np.stack(self.images, axis=0)
+        if self.images is not None:
+            self.images = np.stack(self.images, axis=0)
 
         if preload:
             self.poses = torch.from_numpy(self.poses).cuda()
-            self.images = torch.from_numpy(self.images).cuda()
+            if self.images is not None:
+                self.images = torch.from_numpy(self.images).cuda()
 
         # load intrinsics
         
@@ -167,6 +169,7 @@ class NeRFDataset(Dataset):
         if preload:
             self.intrinsic = torch.from_numpy(self.intrinsic).cuda()
 
+
     def __len__(self):
         return len(self.poses)
 
@@ -185,8 +188,10 @@ class NeRFDataset(Dataset):
             # only string can bypass the default collate, so we don't need to call item: https://github.com/pytorch/pytorch/blob/67a275c29338a6c6cc405bf143e63d53abe600bf/torch/utils/data/_utils/collate.py#L84
             results['H'] = str(self.H)
             results['W'] = str(self.W)
-            results['image'] = self.images[index]
-            return results
+            # blender has test gt, so we also load it
+            if self.mode == 'blender':
+                results['image'] = self.images[index]
         else:
             results['image'] = self.images[index]
-            return results
+            
+        return results

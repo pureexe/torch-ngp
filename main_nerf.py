@@ -43,6 +43,7 @@ if __name__ == '__main__':
 
     ### dataset options
     parser.add_argument('--mode', type=str, default='colmap', help="dataset mode, supports (colmap, blender)")
+    parser.add_argument('--preload', action='store_true', help="preload all data into GPU, fasten training but use more GPU memory")
     # (default is for the fox dataset)
     parser.add_argument('--bound', type=float, default=2, help="assume the scene is bounded in box(-bound, bound)")
     parser.add_argument('--scale', type=float, default=0.33, help="scale camera location into box(-bound, bound)")
@@ -51,7 +52,8 @@ if __name__ == '__main__':
     parser.add_argument('--gui', action='store_true', help="start a GUI")
     parser.add_argument('--W', type=int, default=800, help="GUI width")
     parser.add_argument('--H', type=int, default=800, help="GUI height")
-    parser.add_argument('--radius', type=float, default=3, help="default GUI camera radius from center")
+    parser.add_argument('--radius', type=float, default=5, help="default GUI camera radius from center")
+    parser.add_argument('--fovy', type=float, default=90, help="default GUI camera fovy")
     parser.add_argument('--max_spp', type=int, default=64, help="GUI rendering max sample per pixel")
 
     opt = parser.parse_args()
@@ -88,37 +90,38 @@ if __name__ == '__main__':
         from nerf.network import NeRFNetwork
         from nerf.utils import Trainer
 
-
     model = NeRFNetwork(
-        encoding="hashgrid", encoding_dir="sphere_harmonics", 
-        num_layers=2, hidden_dim=64, geo_feat_dim=15, num_layers_color=3, hidden_dim_color=64, 
+        bound=opt.bound,
         cuda_ray=opt.cuda_ray,
         fibonacci=opt.fibonacci,
         blend_lattice=opt.blend_lattice,
         global_tri=opt.global_tri,
         refiner_ratio=opt.refiner_ratio
     )
-    #model = NeRFNetwork(encoding="frequency", encoding_dir="frequency", num_layers=4, hidden_dim=256, geo_feat_dim=256, num_layers_color=4, hidden_dim_color=128)
+    
     print(model)
+
+    criterion = torch.nn.HuberLoss(delta=0.1)
 
     ### test mode
     if opt.test:
 
-        trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint='latest')
+        trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, criterion=criterion, fp16=opt.fp16, metrics=[PSNRMeter()], use_checkpoint='latest')
 
         if opt.gui:
             gui = NeRFGUI(opt, trainer)
             gui.render()
         
         else:
-            test_dataset = NeRFDataset(opt.path, 'test', radius=opt.radius, n_test=10)
+            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=opt.preload)
             test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1)
 
-            trainer.test(test_loader)
+            if opt.mode == 'blender':
+                trainer.evaluate(test_loader) # blender has gt, so evaluate it.
+            else:
+                trainer.test(test_loader) # colmap doesn't have gt, so just test.
     
     else:
-
-        criterion = torch.nn.HuberLoss(delta=0.1)
 
         optimizer = lambda model: torch.optim.Adam([
             {'name': 'encoding', 'params': list(model.encoder.parameters())},
@@ -129,12 +132,12 @@ if __name__ == '__main__':
         quatuer_stone = opt.num_epochs // 4#pure
         scheduler = lambda optimizer: optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1000, 1500, 2000] if opt.gui else [quatuer_stone, quatuer_stone*2, quatuer_stone*3], gamma=0.33)
 
-        trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint='latest', eval_interval=opt.eval_interval)
+        trainer = Trainer('ngp', vars(opt), model, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, metrics=[PSNRMeter()], use_checkpoint='latest', eval_interval=10)
 
         # need different dataset type for GUI/CMD mode.
 
         if opt.gui:
-            train_dataset = NeRFDataset(opt.path, type='all', mode=opt.mode, scale=opt.scale)
+            train_dataset = NeRFDataset(opt.path, type='all', mode=opt.mode, scale=opt.scale, preload=opt.preload)
             train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
             trainer.train_loader = train_loader # attach dataloader to trainer
 
@@ -146,22 +149,17 @@ if __name__ == '__main__':
         
         else:
             train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale, preload=opt.preload)
-            valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=1, scale=opt.scale, preload=opt.preload) #should be val
-            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=opt.preload)
-
-            if opt.fibonacci > 0:
-                train_plane_mode = opt.blend_lattice if opt.train_plane_mode == "" else opt.train_plane_mode
-                train_dataset = add_encoder_weights(train_dataset, opt.fibonacci, mode=train_plane_mode)
-                valid_dataset = add_encoder_weights(valid_dataset, opt.fibonacci, mode=opt.blend_lattice)
-                test_dataset = add_encoder_weights(test_dataset, opt.fibonacci, mode=opt.blend_lattice)
-
-
             train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
+            valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=2, scale=opt.scale, preload=opt.preload)
             valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=1)
 
             trainer.train(train_loader, valid_loader, opt.num_epochs)
 
             # also test
+            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=opt.preload)
             test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1)
-
-            trainer.test(test_loader)
+            
+            if opt.mode == 'blender':
+                trainer.evaluate(test_loader) # blender has gt, so evaluate it.
+            else:
+                trainer.test(test_loader) # colmap doesn't have gt, so just test.

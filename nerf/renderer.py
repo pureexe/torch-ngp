@@ -1,5 +1,3 @@
-import time
-import mcubes
 import trimesh
 
 import torch
@@ -84,9 +82,12 @@ def plot_pointcloud(pc, color=None):
 
 class NeRFRenderer(nn.Module):
     def __init__(self,
+                 bound=1,
                  cuda_ray=False,
                  ):
         super().__init__()
+
+        self.bound = bound
 
         # extra state for cuda raymarching
         self.cuda_ray = cuda_ray
@@ -102,13 +103,25 @@ class NeRFRenderer(nn.Module):
             self.mean_count = 0
             self.local_step = 0
     
-    def forward(self, x, d, bound):
+    def forward(self, x, d):
         raise NotImplementedError()
 
-    def density(self, x, bound):
+    def density(self, x):
         raise NotImplementedError()
 
-    def run(self, rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb):
+    def reset_extra_state(self):
+        if not self.cuda_ray:
+            return 
+        # density grid
+        self.density_grid.zero_()
+        self.mean_density = 0
+        self.iter_density = 0
+        # step counter
+        self.step_counter.zero_()
+        self.mean_count = 0
+        self.local_step = 0
+
+    def run(self, rays_o, rays_d, num_steps, upsample_steps, bg_color, perturb):
         # rays_o, rays_d: [B, N, 3], assumes B == 1
         # bg_color: [3] in range [0, 1]
         # return: image: [B, N, 3], depth: [B, N]
@@ -117,7 +130,7 @@ class NeRFRenderer(nn.Module):
         device = rays_o.device
 
         # sample steps
-        near, far = near_far_from_bound(rays_o, rays_d, bound, type='cube')
+        near, far = near_far_from_bound(rays_o, rays_d, self.bound, type='cube')
 
         #print(f'near = {near.min().item()} ~ {near.max().item()}, far = {far.min().item()} ~ {far.max().item()}')
 
@@ -133,7 +146,7 @@ class NeRFRenderer(nn.Module):
 
         # generate pts
         pts = rays_o.unsqueeze(-2) + rays_d.unsqueeze(-2) * z_vals.unsqueeze(-1) # [B, N, 1, 3] * [B, N, T, 3] -> [B, N, T, 3]
-        pts = pts.clamp(-bound, bound) # must be strictly inside the bounds, else lead to nan in hashgrid encoder!
+        pts = pts.clamp(-self.bound, self.bound) # must be strictly inside the bounds, else lead to nan in hashgrid encoder!
 
         #print(f'pts {pts.shape} {pts.min().item()} ~ {pts.max().item()}')
 
@@ -142,7 +155,7 @@ class NeRFRenderer(nn.Module):
         # query SDF and RGB
         dirs = rays_d.unsqueeze(-2).expand_as(pts)
 
-        sigmas, rgbs = self(pts.reshape(B, -1, 3), dirs.reshape(B, -1, 3), bound=bound)
+        sigmas, rgbs = self(pts.reshape(B, -1, 3), dirs.reshape(B, -1, 3))
 
         rgbs = rgbs.reshape(B, N, num_steps, 3) # [B, N, T, 3]
         sigmas = sigmas.reshape(B, N, num_steps) # [B, N, T]
@@ -164,11 +177,11 @@ class NeRFRenderer(nn.Module):
                 new_z_vals = new_z_vals.reshape(B, N, upsample_steps)
 
                 new_pts = rays_o.unsqueeze(-2) + rays_d.unsqueeze(-2) * new_z_vals.unsqueeze(-1) # [B, N, 1, 3] * [B, N, t, 3] -> [B, N, t, 3]
-                new_pts = new_pts.clamp(-bound, bound)
+                new_pts = new_pts.clamp(-self.bound, self.bound)
 
             # only forward new points to save computation
             new_dirs = rays_d.unsqueeze(-2).expand_as(new_pts)
-            new_sigmas, new_rgbs = self(new_pts.reshape(B, -1, 3), new_dirs.reshape(B, -1, 3), bound=bound)
+            new_sigmas, new_rgbs = self(new_pts.reshape(B, -1, 3), new_dirs.reshape(B, -1, 3))
             new_rgbs = new_rgbs.reshape(B, N, upsample_steps, 3) # [B, N, t, 3]
             new_sigmas = new_sigmas.reshape(B, N, upsample_steps) # [B, N, t]
 
@@ -209,7 +222,7 @@ class NeRFRenderer(nn.Module):
         return depth, image
 
 
-    def run_cuda(self, rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb):
+    def run_cuda(self, rays_o, rays_d, num_steps, upsample_steps, bg_color, perturb):
         # rays_o, rays_d: [B, N, 3], assumes B == 1
         # return: image: [B, N, 3], depth: [B, N]
 
@@ -217,7 +230,7 @@ class NeRFRenderer(nn.Module):
         device = rays_o.device
 
         if bg_color is None:
-            bg_color = torch.ones(3, dtype=rays_o.dtype, device=device)
+            bg_color = 1
 
         if self.training:
             # setup counter
@@ -225,19 +238,21 @@ class NeRFRenderer(nn.Module):
             counter.zero_() # set to 0
             self.local_step += 1
 
-            xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, bound, self.density_grid, self.mean_density, self.iter_density, counter, self.mean_count, perturb, 128, False)
-            sigmas, rgbs = self(xyzs, dirs, bound=bound)
-            depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, bound, bg_color)
+            xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, self.bound, self.density_grid, self.mean_density, self.iter_density, counter, self.mean_count, perturb, 128, False)
+            sigmas, rgbs = self(xyzs, dirs)
+            weights_sum, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, self.bound)
+
+            # composite bg (shade_kernel_nerf)
+            image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
+            depth = None # currently training do not requires depth
 
         else:
-
-            # xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, bound, self.density_grid, self.mean_density, self.iter_density, None, self.mean_count, self.training, 128, True)
-            # sigmas, rgbs = self(xyzs, dirs, bound=bound)
-            # depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, bound, bg_color)
-
+           
             # allocate outputs 
             # if use autocast, must init as half so it won't be autocasted and lose reference.
-            dtype = torch.half if torch.is_autocast_enabled() else torch.float32
+            #dtype = torch.half if torch.is_autocast_enabled() else torch.float32
+            # output should always be float32! only network inference uses half.
+            dtype = torch.float32
             
             weights_sum = torch.zeros(B * N, dtype=dtype, device=device)
             depth = torch.zeros(B * N, dtype=dtype, device=device)
@@ -250,7 +265,7 @@ class NeRFRenderer(nn.Module):
             rays_t = torch.zeros(2, n_alive, dtype=dtype, device=device)
 
             # pre-calculate near far
-            near, far = near_far_from_bound(rays_o, rays_d, bound, type='cube')
+            near, far = near_far_from_bound(rays_o, rays_d, self.bound, type='cube')
             near = near.view(B * N)
             far = far.view(B * N)
 
@@ -275,8 +290,8 @@ class NeRFRenderer(nn.Module):
                 # decide compact_steps
                 n_step = max(min(B * N // n_alive, 8), 1)
 
-                xyzs, dirs, deltas = raymarching.march_rays(n_alive, n_step, rays_alive[i % 2], rays_t[i % 2], rays_o, rays_d, bound, self.density_grid, self.mean_density, near, far, 128, perturb)
-                sigmas, rgbs = self(xyzs, dirs, bound=bound)
+                xyzs, dirs, deltas = raymarching.march_rays(n_alive, n_step, rays_alive[i % 2], rays_t[i % 2], rays_o, rays_d, self.bound, self.density_grid, self.mean_density, near, far, 128, perturb)
+                sigmas, rgbs = self(xyzs, dirs)
                 raymarching.composite_rays(n_alive, n_step, rays_alive[i % 2], rays_t[i % 2], sigmas, rgbs, deltas, weights_sum, depth, image)
 
                 #print(f'step = {step}, n_step = {n_step}, n_alive = {n_alive}')
@@ -289,13 +304,14 @@ class NeRFRenderer(nn.Module):
             depth = torch.clamp(depth - near, min=0) / (far - near)
 
 
-        depth = depth.reshape(B, N)
         image = image.reshape(B, N, 3)
+        if depth is not None:
+            depth = depth.reshape(B, N)
 
         return depth, image
 
     
-    def update_extra_state(self, bound, decay=0.95):
+    def update_extra_state(self, decay=0.95):
         # call before each epoch to update extra states.
 
         if not self.cuda_ray:
@@ -304,11 +320,11 @@ class NeRFRenderer(nn.Module):
         ### update density grid
         resolution = self.density_grid.shape[0]
 
-        half_grid_size = bound / resolution
+        half_grid_size = self.bound / resolution
         
-        X = torch.linspace(-bound + half_grid_size, bound - half_grid_size, resolution).split(128)
-        Y = torch.linspace(-bound + half_grid_size, bound - half_grid_size, resolution).split(128)
-        Z = torch.linspace(-bound + half_grid_size, bound - half_grid_size, resolution).split(128)
+        X = torch.linspace(-self.bound + half_grid_size, self.bound - half_grid_size, resolution).split(128)
+        Y = torch.linspace(-self.bound + half_grid_size, self.bound - half_grid_size, resolution).split(128)
+        Z = torch.linspace(-self.bound + half_grid_size, self.bound - half_grid_size, resolution).split(128)
 
         tmp_grid = torch.zeros_like(self.density_grid)
         with torch.no_grad():
@@ -327,7 +343,7 @@ class NeRFRenderer(nn.Module):
                         if pad_n != 0:
                             pts = torch.cat([pts, torch.zeros(pad_n, 3)], dim=0)
                         # query density
-                        density = self.density(pts.to(tmp_grid.device), bound)[:n].reshape(lx, ly, lz).detach()
+                        density = self.density(pts.to(tmp_grid.device))[:n].reshape(lx, ly, lz).detach()
                         tmp_grid[xi * 128: xi * 128 + lx, yi * 128: yi * 128 + ly, zi * 128: zi * 128 + lz] = density
         
         # ema update
@@ -344,7 +360,7 @@ class NeRFRenderer(nn.Module):
         #print(f'[density grid] min={self.density_grid.min().item():.4f}, max={self.density_grid.max().item():.4f}, mean={self.mean_density:.4f} | [step counter] mean={self.mean_count}')
 
 
-    def render(self, rays_o, rays_d, bound=1, num_steps=128, upsample_steps=128, staged=False, max_ray_batch=4096, bg_color=None, perturb=False, **kwargs):
+    def render(self, rays_o, rays_d, num_steps=128, upsample_steps=128, staged=False, max_ray_batch=4096, bg_color=None, perturb=False, **kwargs):
         # rays_o, rays_d: [B, N, 3], assumes B == 1
         # return: pred_rgb: [B, N, 3]
 
@@ -365,12 +381,12 @@ class NeRFRenderer(nn.Module):
                 head = 0
                 while head < N:
                     tail = min(head + max_ray_batch, N)
-                    depth_, image_ = _run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], bound, num_steps, upsample_steps, bg_color, perturb)
+                    depth_, image_ = _run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], num_steps, upsample_steps, bg_color, perturb)
                     depth[b:b+1, head:tail] = depth_
                     image[b:b+1, head:tail] = image_
                     head += max_ray_batch
         else:
-            depth, image = _run(rays_o, rays_d, bound, num_steps, upsample_steps, bg_color, perturb)
+            depth, image = _run(rays_o, rays_d, num_steps, upsample_steps, bg_color, perturb)
 
         results = {}
         results['depth'] = depth
