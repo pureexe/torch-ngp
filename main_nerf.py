@@ -4,7 +4,7 @@ import argparse
 
 from nerf.provider import NeRFDataset
 from nerf.gui import NeRFGUI
-from nerf.utils import seed_everything
+from nerf.utils import seed_everything, PSNRMeter
 from nerf.nex360 import add_encoder_weights
 
 #torch.autograd.set_detect_anomaly(True)
@@ -21,9 +21,6 @@ if __name__ == '__main__':
     parser.add_argument('--eval_interval',type=int, default=50) #pure
     parser.add_argument('--num_rays', type=int, default=4096)
     parser.add_argument('--cuda_ray', action='store_true', help="use CUDA raymarching instead of pytorch")
-    parser.add_argument('--preload', dest='preload', action='store_true')
-    parser.add_argument('--no_preload', dest='preload', action='store_false')
-    parser.set_defaults(preload=True)
     # (only valid when not using --cuda_ray)
     parser.add_argument('--num_steps', type=int, default=128)
     parser.add_argument('--upsample_steps', type=int, default=128)

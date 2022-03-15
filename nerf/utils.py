@@ -69,12 +69,6 @@ def get_rays(c2w, intrinsics, H, W, N_rays=-1):
 
     i, j = torch.meshgrid(torch.linspace(0, W-1, W, device=device), torch.linspace(0, H-1, H, device=device), indexing='ij') # for torch < 1.10, should remove indexing='ij'
 
-    # pure: direction_random
-    if perturb:
-        i = i + (torch.rand_like(i) - 0.5)
-        i = torch.clip(i,0,W-1)
-        j = j + (torch.rand_like(j) - 0.5)
-        j = torch.clip(j,0,H-1)
     
     i = i.t().reshape([*[1]*len(prefix), H*W]).expand([*prefix, H*W])
     j = j.t().reshape([*[1]*len(prefix), H*W]).expand([*prefix, H*W])
