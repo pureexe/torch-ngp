@@ -119,8 +119,8 @@ class NeRFDataset(Dataset):
 
                 image = cv2.imread(f_path, cv2.IMREAD_UNCHANGED) # [H, W, 3] o [H, W, 4]
                 if self.H is None or self.W is None:
-                    self.H = image.shape[0] // downscale
-                    self.W = image.shape[1] // downscale
+                    self.H = int(image.shape[0] // downscale)
+                    self.W = int(image.shape[1] // downscale)
 
                 # add support for the alpha channel as a mask.
                 if image.shape[-1] == 3: 

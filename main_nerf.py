@@ -36,7 +36,11 @@ if __name__ == '__main__':
     parser.add_argument('--refiner_ratio',type=float, default=-1, help="use fiborefiner network if >= 0") #pure
     parser.add_argument('--train_plane_mode',type=str, default="", help="train plane picking scheme") #pure
     parser.add_argument('--og', action='store_true', help="use original nerf")
+    parser.add_argument('--ogh', action='store_true', help="use original nerf [hierarchy mode]")
+    parser.add_argument('--ogs', action='store_true', help="use original nerf [NeX360 sigma mode]")
     parser.add_argument('--learning_rate', type=float, default=1e-2)
+    parser.add_argument('--downscale', type=float, default=1, help="downscale input size for faster train/inference")
+
 
     ### dataset options
     parser.add_argument('--mode', type=str, default='colmap', help="dataset mode, supports (colmap, blender)")
@@ -58,7 +62,13 @@ if __name__ == '__main__':
     
     seed_everything(opt.seed)
     
-    if opt.og:
+    if opt.ogs:
+        from nerf.network_nerf_hierarchy_sigma import NeRFNetwork
+        from nerf.trainer_hierarchy import Trainer
+    elif opt.ogh:
+        from nerf.network_nerf_hierarchy import NeRFNetwork
+        from nerf.trainer_hierarchy import Trainer
+    elif opt.og:
         from nerf.network_nerf import NeRFNetwork
         from nerf.utils import Trainer
     elif opt.refiner_ratio >= 0:
@@ -145,15 +155,15 @@ if __name__ == '__main__':
             gui.render()
         
         else:
-            train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, scale=opt.scale, preload=opt.preload)
+            train_dataset = NeRFDataset(opt.path, type='train', mode=opt.mode, downscale=opt.downscale, scale=opt.scale, preload=opt.preload)
             train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
-            valid_dataset = NeRFDataset(opt.path, type='val', mode=opt.mode, downscale=2, scale=opt.scale, preload=opt.preload)
+            valid_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode,  downscale=opt.downscale,  scale=opt.scale, preload=opt.preload)
             valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=1)
 
             trainer.train(train_loader, valid_loader, opt.num_epochs)
 
             # also test
-            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale, preload=opt.preload)
+            test_dataset = NeRFDataset(opt.path, type='test', mode=opt.mode, scale=opt.scale,  downscale=opt.downscale,  preload=opt.preload)
             test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1)
             
             if opt.mode == 'blender':

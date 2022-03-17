@@ -240,7 +240,6 @@ class NeRFRenderer(BaseRenderer):
         if staged and not self.cuda_ray:
             depth = torch.empty((B, N), device=device)
             image = torch.empty((B, N, 3), device=device)
-
             for b in range(B):
                 head = 0
                 while head < N:
